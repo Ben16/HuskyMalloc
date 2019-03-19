@@ -193,7 +193,7 @@ void hfree(void* item)
 	size_t size = *((long*)base) + sizeof(size_t);
 	if(size >= PAGE_SIZE)
 	{
-		size_t pages = div_up(size, PAGE_SIZE);
+		size_t pages = size / PAGE_SIZE;
 		Node* previous = 0;
 		Node* current = free_list_head;
 		while(current)
@@ -211,6 +211,12 @@ void hfree(void* item)
 		}
 		munmap(base, pages * PAGE_SIZE);
 		stats.pages_unmapped += pages;
+		if(PAGE_SIZE * pages != size)
+		{
+			Node* node = (Node*)(item + PAGE_SIZE * pages);
+			node->size = size - PAGE_SIZE * pages;
+			push_free_list(node);
+		}
 	}
 	else
 	{
