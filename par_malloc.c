@@ -8,8 +8,7 @@
 #include "xmalloc.h"
 
 #define PAGE_SIZE 4096
-//#define BUCKET_COUNT 10
-#define BUCKET_COUNT 6
+#define BUCKET_COUNT 10
 
 typedef struct free_entry_s
 {
