@@ -7,30 +7,18 @@
 
 #include "xmalloc.h"
 
-#define PAGE_SIZE 4096
-#define BUCKET_COUNT 10
+#define PAGE_SIZE 8192
+#define BUCKET_COUNT 16
 
-typedef struct free_entry_s
-{
-	
-} free_entry;
-
-const int bucket_sizes[BUCKET_COUNT] = {4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048};
-const int bitfield_sizes_bytes[BUCKET_COUNT] = {124, 63, 32, 16, 8, 4, 2, 1, 1, 1};
-const int bitfield_sizes_bits[BUCKET_COUNT] = {991, 503, 253, 127, 63, 31, 15, 7, 3, 1};
-__thread void* buckets[BUCKET_COUNT] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+const int bucket_sizes[BUCKET_COUNT] = {16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072};
+__thread void* buckets[BUCKET_COUNT] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+__thread void** free_list[BUCKET_COUNT] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+__thread pthread_mutex_t free_list_lock = PTHREAD_MUTEX_INITIALIZER;
 
 const unsigned char full_segment = 255;
 unsigned char mask = 1;
 
 typedef long tag_t;
-
-/*int
-bitfield_size(int size)
-{
-	int bit_count = (PAGE_SIZE - sizeof(void*)) * 8 / (size * 8 + 1);
-	return bit_count / 8 + ((bit_count % 8) ? 1 : 0);
-}*/
 
 int
 get_bucket_index(size_t bytes)
@@ -43,85 +31,111 @@ get_bucket_index(size_t bytes)
 	return -1;
 }
 
+void
+fill_space(void* loc, size_t remaining)
+{
+	if(remaining < bucket_sizes[0])
+		return;
+
+	int index = get_bucket_index(remaining) - 1;
+	int bucket_size;
+	while(index > 0)
+	{
+		bucket_size = bucket_sizes[index];
+		if(!free_list[index])
+		{
+			*((void**)loc) = 0;
+			free_list[index] = (void**)loc;
+			fill_space(loc + bucket_size, remaining - bucket_size);
+			return;
+		}
+		--index;
+	}
+	
+	// all buckets have free list entries; dump remaining into 16 bucket
+	bucket_size = bucket_sizes[index];
+	int entries = remaining / bucket_size;
+	void** working = (void**)loc;
+	for(int i = 0; i < entries; ++i, working = (void**)((void*)working + bucket_size))
+	{
+		*working = free_list[index];
+		free_list[index] = working;
+	}
+}
+
 void*
 xmalloc(size_t bytes)
 {
-	bytes += 2 * sizeof(tag_t);
-	// bucket_index | bitfield offset (bits)
+	bytes += sizeof(tag_t);
 
-	tag_t bucket_index = get_bucket_index(bytes);
+	int bucket_index = get_bucket_index(bytes);
+	int bucket_size = bucket_sizes[bucket_index];
 	if(bucket_index < 0) //allocations > 1 page
 	{
 		bytes = (bytes / PAGE_SIZE + ((bytes % PAGE_SIZE) ? 1 : 0)) * PAGE_SIZE;
 		tag_t* mem = (tag_t*)mmap(0, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-		*mem = -1;
-		*(mem + 1) = (tag_t)bytes;
-		return mem + 2;
+		*mem = bytes;
+		return mem + 1;
 	}
-
-	void* page = buckets[bucket_index];
-	void* previous = 0;
-	int bucket_size = bucket_sizes[bucket_index];
-	int bitfield_size_bytes = bitfield_sizes_bytes[bucket_index];
-	int bitfield_size_bits = bitfield_sizes_bits[bucket_index];
-	while(page)
+	else if(free_list[bucket_index])
 	{
-		void* next = *((void**)page);
-		unsigned char* bitfield = page + sizeof(void*);
-		for(int bit = 0; bit < bitfield_size_bits; ++bit)
-		{
-			unsigned char shifted_mask = mask << (7 - (bit % 8));
-			if(~bitfield[bit / 8] & shifted_mask)
-			{
-				bitfield[bit / 8] = bitfield[bit / 8] | shifted_mask;
-				tag_t* base = (tag_t*)(page + sizeof(void*) + bitfield_size_bytes + bit * bucket_size);
-				*base = bucket_index;
-				*(base + 1) = bit;
-				return (base + 2);
-			}
-		}
-
-		previous = page;
-		page = next;
+		void** entry = free_list[bucket_index];
+		free_list[bucket_index] = (void**)(*entry);
+		tag_t* tag = (tag_t*)entry;
+		*tag = bucket_index;
+		return tag + 1;
 	}
-
-	void* new_page = mmap(0, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-	if(!previous)
-		buckets[bucket_index] = new_page;
 	else
-		*((void**)previous) = new_page;
+	{
+		void* new_page = mmap(0, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 
-	*((void**)new_page) = 0;
-	unsigned char* bitfield = (unsigned char*)(new_page + sizeof(void*));
-	memset(bitfield, 0, bitfield_size_bytes);
-	bitfield[0] = 1 << 7;
-	tag_t* base = (tag_t*)((void*)bitfield + bitfield_size_bytes);
-	*base = bucket_index;
-	*(base + 1) = 0;
-	return (base + 2);
+		void* previous = 0;
+		void* page = buckets[bucket_index];
+		while(page)
+		{
+			previous = page;
+			page = *((void**)page);
+		}
+		if(!previous)
+			buckets[bucket_index] = new_page;
+		else
+			*((void**)previous) = new_page;
+
+		*((void**)new_page) = 0;
+		tag_t* base = new_page + sizeof(void*);
+		*base = bucket_index;
+		
+		int entries = (PAGE_SIZE - sizeof(void*)) / bucket_size - 1;
+		void** working = (void**)((void*)base + bucket_size);
+		for(int i = 0; i < entries; ++i, working = (void**)((void*)working + bucket_size))
+		{
+			*working = free_list[bucket_index];
+			free_list[bucket_index] = working;
+		}
+		fill_space((void*)working, (PAGE_SIZE - sizeof(void*)) % bucket_size);
+		return (base + 1);
+	}
 }
 
 void
 xfree(void* ptr)
 {
-	tag_t index = *((tag_t*)(ptr - 2*sizeof(tag_t)));
-	if(index < 0)
-		munmap(ptr - 2*sizeof(tag_t), *((tag_t*)(ptr - sizeof(tag_t))));
+	long identifier = *((tag_t*)(ptr - sizeof(tag_t)));
+	if(identifier >= BUCKET_COUNT)
+		munmap(ptr - sizeof(tag_t), identifier);
 	else
 	{
-		tag_t offset = *((tag_t*)(ptr - sizeof(tag_t)));
-		int bucket_size = bucket_sizes[index];
-		unsigned char* bitfield = ptr - bucket_size * offset - bitfield_sizes_bytes[index];
-		bitfield[offset / 8] = bitfield[offset / 8] & ~(mask << (offset % 8));
+		void** base = (void**)(ptr - sizeof(tag_t));
+		*base = free_list[identifier];
+		free_list[identifier] = base;
 	}
 }
 
 void*
 xrealloc(void* prev, size_t bytes)
 {
-	// NAIVE
 	void* new_loc = xmalloc(bytes);
-	memcpy(prev, new_loc, bytes);
+	memcpy(new_loc, prev, bytes);
 	xfree(prev);
 	return new_loc;
 }
