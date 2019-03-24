@@ -85,8 +85,14 @@ xmalloc(size_t bytes)
 		*tag = bucket_index;
 		return tag + 1;
 	}
-	else
-	{
+	/*else if(bucket_index < (BUCKET_COUNT - 1) && free_list[bucket_index + 1]) {//will borrow from next largest if available
+		void** entry = free_list[bucket_index + 1];
+		free_list[bucket_index + 1] = (void**)(*entry);
+		tag_t* tag = (tag_t*)entry;
+		*tag = bucket_index;
+		return tag + 1;
+	}*/
+	else {
 		void* new_page = mmap(0, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 
 		void* previous = 0;
@@ -134,6 +140,10 @@ xfree(void* ptr)
 void*
 xrealloc(void* prev, size_t bytes)
 {
+	if(*((tag_t*)(prev - sizeof(tag_t))) == get_bucket_index(bytes + sizeof(tag_t))) {
+		//do nothing, it's already big enough
+		return prev;
+	}
 	void* new_loc = xmalloc(bytes);
 	memcpy(new_loc, prev, bytes);
 	xfree(prev);
