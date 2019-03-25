@@ -1,0 +1,51 @@
+Results (sample size 1K):
+----------------------------------------------
+| Memory allocator | Test | Median Speed (s) |
+----------------------------------------------
+|       sys        | list |      0.02        |
+----------------------------------------------
+|       hw7        | list |      1.83        |
+----------------------------------------------
+|       par        | list |      0.01        |
+----------------------------------------------
+|       sys        | ivec |      0.00        |
+----------------------------------------------
+|       hw7        | ivec |      0.16        |
+----------------------------------------------
+|       par        | ivec |      0.01        |
+----------------------------------------------
+My machine (VM):
+OS = Ubuntu 18.04 LTS
+Processor Model: Intel(R) Core(TM) i7-6700HQ CPU @ 2.60GHz
+# Processor Cores: 4
+RAM: 2048MB
+
+Memory Allocator Strategy:
+We implemented buckets of different sizes for our allocator. Each size has a 
+freelist of returnable chunks of memory. If memory is requested and there is
+nothing on the freelist, a new page is divided up and returned. The bucket
+used will be whichever one is smallest and can fit the desired memory size.
+
+The size of returned memory is stored before each block of memory returned.
+The freelist is simply a series of void* that point to next elements of the
+list. 
+
+Each page contains a pointer to the next page.
+
+We found that raising the mmap/munmap boundary from one to two pages increased
+performance. 
+
+If the user requests memory, the appropriate size of bucket is returned to 
+them. If there is "leftover" memory after that, it is given to smaller buckets
+to reduce the number of pages that need to be created.
+
+Freeing memory simply adds it to the appropriate freelist.
+
+To prevent threads from messing with each other, each thread has its own arena.
+
+Results:
+Our allocator did certainly improve in speed compared to homework 7, and was
+pretty fast. On most occassions it can outdo the system allocator when dealing
+with the list tests. In the ivec case, however, it only rarely outdoes the
+system allocator. This may be due to our realloc function simply mallocing,
+copying, and freeing, but we could not find a way to improve this.
