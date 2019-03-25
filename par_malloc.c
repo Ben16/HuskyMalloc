@@ -13,10 +13,6 @@
 const int bucket_sizes[BUCKET_COUNT] = {16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072};
 __thread void* buckets[BUCKET_COUNT] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 __thread void** free_list[BUCKET_COUNT] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-__thread pthread_mutex_t free_list_lock = PTHREAD_MUTEX_INITIALIZER;
-
-const unsigned char full_segment = 255;
-unsigned char mask = 1;
 
 typedef long tag_t;
 
@@ -85,13 +81,6 @@ xmalloc(size_t bytes)
 		*tag = bucket_index;
 		return tag + 1;
 	}
-	/*else if(bucket_index < (BUCKET_COUNT - 1) && free_list[bucket_index + 1]) {//will borrow from next largest if available
-		void** entry = free_list[bucket_index + 1];
-		free_list[bucket_index + 1] = (void**)(*entry);
-		tag_t* tag = (tag_t*)entry;
-		*tag = bucket_index;
-		return tag + 1;
-	}*/
 	else {
 		void* new_page = mmap(0, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 
@@ -140,10 +129,6 @@ xfree(void* ptr)
 void*
 xrealloc(void* prev, size_t bytes)
 {
-	if(*((tag_t*)(prev - sizeof(tag_t))) == get_bucket_index(bytes + sizeof(tag_t))) {
-		//do nothing, it's already big enough
-		return prev;
-	}
 	void* new_loc = xmalloc(bytes);
 	memcpy(new_loc, prev, bytes);
 	xfree(prev);
