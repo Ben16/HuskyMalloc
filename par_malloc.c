@@ -30,7 +30,15 @@ get_bucket_index(size_t bytes)
 void
 fill_space(void* loc, size_t remaining)
 {
-	if(remaining < bucket_sizes[0])
+	int bucket_index = get_bucket_index(remaining) - 1;
+	if(bucket_index < 0)
+		return;
+	int bucket_size = bucket_sizes[bucket_index];
+	*((void**)loc) = (void*)free_list[bucket_index];
+	free_list[bucket_index] = (void**)loc;
+	fill_space(loc + bucket_size, remaining - bucket_size);
+
+	/*if(remaining < bucket_sizes[0])
 		return;
 
 	int index = get_bucket_index(remaining) - 1;
@@ -46,17 +54,17 @@ fill_space(void* loc, size_t remaining)
 			return;
 		}
 		--index;
-	}
+	}*/
 	
 	// all buckets have free list entries; dump remaining into 16 bucket
-	bucket_size = bucket_sizes[index];
+	/*bucket_size = bucket_sizes[index];
 	int entries = remaining / bucket_size;
 	void** working = (void**)loc;
 	for(int i = 0; i < entries; ++i, working = (void**)((void*)working + bucket_size))
 	{
 		*working = free_list[index];
 		free_list[index] = working;
-	}
+	}*/
 }
 
 void*
@@ -81,7 +89,21 @@ xmalloc(size_t bytes)
 		*tag = bucket_index;
 		return tag + 1;
 	}
-	else {
+	else
+	{
+		for(int i = bucket_index + 1; i < BUCKET_COUNT; ++i)
+		{
+			if(free_list[i])
+			{
+				void** entry = free_list[i];
+				free_list[i] = (void**)(*entry);
+				tag_t* tag = (tag_t*)entry;
+				*tag = bucket_index;
+				fill_space((void*)entry + bucket_size, bucket_sizes[i] - bucket_size);
+				return tag + 1;
+			}
+		}
+
 		void* new_page = mmap(0, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 
 		void* previous = 0;
@@ -107,7 +129,7 @@ xmalloc(size_t bytes)
 			*working = free_list[bucket_index];
 			free_list[bucket_index] = working;
 		}
-		fill_space((void*)working, (PAGE_SIZE - sizeof(void*)) % bucket_size);
+		fill_space((void*)working, PAGE_SIZE - (entries + 1) * bucket_size - sizeof(void*));
 		return (base + 1);
 	}
 }
@@ -129,6 +151,7 @@ xfree(void* ptr)
 void*
 xrealloc(void* prev, size_t bytes)
 {
+	//printf("Realloc to %ld bytes\n", bytes);
 	void* new_loc = xmalloc(bytes);
 	memcpy(new_loc, prev, bytes);
 	xfree(prev);
